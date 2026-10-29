@@ -80,11 +80,59 @@ jobs:
           base64 -D -i "$PATCH_B64" -o "$PATCH_GZ"
           gzip -t "$PATCH_GZ"
           gzip -dc "$PATCH_GZ" > "$PATCH_FILE"
-          if ! (cd "$SOURCE_ROOT" && patch --batch --forward --fuzz=3 -p1 < "$PATCH_FILE"); then
-            echo "Patch failed; rejected hunk context follows:" >&2
-            if [[ -f "$SOURCE_ROOT/Source/PluginEditor.cpp.rej" ]]; then cat "$SOURCE_ROOT/Source/PluginEditor.cpp.rej"; fi
-            exit 1
+          patch_status=0
+          (cd "$SOURCE_ROOT" && patch --batch --forward --fuzz=3 -p1 < "$PATCH_FILE") || patch_status=$?
+
+          if [[ "$patch_status" -ne 0 ]]; then
+            REJECTS="$(find "$SOURCE_ROOT" -name '*.rej' -type f | wc -l | tr -d ' ')"
+            if [[ "$REJECTS" != "1" || ! -f "$SOURCE_ROOT/Source/PluginEditor.cpp.rej" ]]; then
+              echo "Unexpected patch rejects; refusing to continue." >&2
+              find "$SOURCE_ROOT" -name '*.rej' -type f -print >&2
+              exit 1
+            fi
+            echo "One expected preset-default hunk differs in this repository ZIP; replacing that complete function explicitly."
+            cat "$SOURCE_ROOT/Source/PluginEditor.cpp.rej"
+            rm "$SOURCE_ROOT/Source/PluginEditor.cpp.rej"
           fi
+
+          python3 - "$SOURCE_ROOT/Source/PluginEditor.cpp" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text()
+          start_marker = "void RectifiAudioProcessorEditor::applyBuiltInPreset(int index)"
+          end_marker = "\\nvoid RectifiAudioProcessorEditor::savePresetFromDialog()"
+          start = source.find(start_marker)
+          end = source.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit("Could not locate applyBuiltInPreset() boundaries.")
+          replacement = """void RectifiAudioProcessorEditor::applyBuiltInPreset(int index)
+          {
+              int mode = 0;
+              switch (index)
+              {
+                  case 1: mode = 0; break; // Positive
+                  case 2: mode = 1; break; // Negative
+                  case 3: mode = 2; break; // Alternate
+                  case 4: mode = 3; break; // Alt-Max
+                  case 5: mode = 4; break; // Positive Half
+                  case 6: mode = 5; break; // Negative Half
+                  default: mode = 0; break;
+              }
+              setPlainParameter(processor, "mode", static_cast<float>(mode));
+              setPlainParameter(processor, "mix", 100.0f);
+              setPlainParameter(processor, "gain", 0.0f);
+              setPlainParameter(processor, "rectifiedGain", 0.0f);
+              setPlainParameter(processor, "oversampling", 0.0f);
+              setPlainParameter(processor, "preFilterCutoff", rectifi::filterThruCutoffHz);
+              setPlainParameter(processor, "postFilterCutoff", rectifi::filterThruCutoffHz);
+          }
+          """
+          path.write_text(source[:start] + replacement + source[end:])
+          print("Normalised six-mode built-in preset defaults.")
+          PY
+
           echo "Applied PACCO AUDIO UI and Rectified Gain source changes."
 
       - name: Fix source compatibility with JUCE 6.1.6
