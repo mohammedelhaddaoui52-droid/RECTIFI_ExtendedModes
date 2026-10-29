@@ -80,7 +80,11 @@ jobs:
           end += 3
           old_function = source[start:end]
           if "runModalLoop()" not in old_function:
-              raise SystemExit("Expected old runModalLoop() implementation was not found; refusing an unexpected patch.")
+              if "enterModalState(true" not in old_function:
+                  raise SystemExit("Preset dialog is neither the known legacy nor JUCE-6-compatible implementation.")
+              path.write_text(source)
+              print("Preset dialog is already JUCE 6.1.6 compatible; font resource names checked.")
+              raise SystemExit(0)
 
           new_function = r'''void RectifiAudioProcessorEditor::savePresetFromDialog()
           {
