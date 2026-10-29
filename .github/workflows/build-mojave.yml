@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: rectifi-extended-mojave-${{ github.ref }}
+  group: rectifi-extended-mojave-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
