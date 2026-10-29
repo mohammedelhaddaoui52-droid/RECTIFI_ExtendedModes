@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "RECTIFI_VST3_ExtendedModes_Source.zip"
+      - "source-patch-b64/**"
       - ".github/workflows/build-mojave.yml"
   workflow_dispatch:
 
@@ -47,6 +48,40 @@ jobs:
           xcode-select -p
           cmake --version
           git --version
+
+      - name: Apply PACCO AUDIO UI refinement patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d source-patch-b64 ]]; then
+            echo "No staged patch is present; the source archive already contains the current version."
+            exit 0
+          fi
+
+          PATCH_B64="$RUNNER_TEMP/rectifi-pacco-ui.patch.gz.b64"
+          PATCH_GZ="$RUNNER_TEMP/rectifi-pacco-ui.patch.gz"
+          PATCH_FILE="$RUNNER_TEMP/rectifi-pacco-ui.patch"
+          cat \
+            source-patch-b64/01.txt \
+            source-patch-b64/02.txt \
+            source-patch-b64/03.txt \
+            source-patch-b64/04.txt \
+            source-patch-b64/05.txt \
+            source-patch-b64/06.txt \
+            source-patch-b64/06x.txt \
+            source-patch-b64/07.txt \
+            source-patch-b64/08.txt > "$PATCH_B64"
+
+          ENCODED_SIZE="$(wc -c < "$PATCH_B64" | tr -d ' ')"
+          if [[ "$ENCODED_SIZE" != "22524" ]]; then
+            echo "Patch payload length mismatch: expected 22524, got $ENCODED_SIZE" >&2
+            exit 1
+          fi
+          base64 -d "$PATCH_B64" > "$PATCH_GZ"
+          gzip -t "$PATCH_GZ"
+          gzip -dc "$PATCH_GZ" > "$PATCH_FILE"
+          (cd "$SOURCE_ROOT" && patch --batch --forward -p1 < "$PATCH_FILE")
+          echo "Applied PACCO AUDIO UI and Rectified Gain source changes."
 
       - name: Fix source compatibility with JUCE 6.1.6
         shell: bash
@@ -218,8 +253,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add RECTIFI_VST3_ExtendedModes_Source.zip
+          if [[ -d source-patch-b64 ]]; then
+            git rm -r source-patch-b64
+          fi
           if ! git diff --cached --quiet; then
-            git commit -m "Fix JUCE 6.1.6 source compatibility [skip ci]"
+            git commit -m "Publish PACCO AUDIO RECTI-FI source update [skip ci]"
             git push origin HEAD:main
           else
             echo "Source ZIP is already up to date."
