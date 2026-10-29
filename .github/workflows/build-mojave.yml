@@ -20,7 +20,7 @@ jobs:
   build-mojave:
     # An Intel runner produces x86_64 binaries; deployment target remains Mojave 10.14.
     runs-on: macos-15-intel
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       - name: Check out source archive
