@@ -1,0 +1,122 @@
+name: Build RECTI-FI Extended Modes for macOS Mojave
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "RECTIFI_VST3_ExtendedModes_Source.zip"
+      - ".github/workflows/build-mojave.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rectifi-extended-mojave-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-mojave:
+    # An Intel runner produces x86_64 binaries; deployment target remains Mojave 10.14.
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source archive
+        uses: actions/checkout@v4
+
+      - name: Validate and extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="RECTIFI_VST3_ExtendedModes_Source.zip"
+          test -f "$ARCHIVE"
+          unzip -t "$ARCHIVE"
+          mkdir -p source
+          unzip -q "$ARCHIVE" -d source
+          CMAKE_FILE="$(find source -type f -name CMakeLists.txt -print -quit)"
+          if [[ -z "$CMAKE_FILE" ]]; then
+            echo "CMakeLists.txt was not found inside the source ZIP." >&2
+            exit 1
+          fi
+          SOURCE_ROOT="$(dirname "$CMAKE_FILE")"
+          test -f "$SOURCE_ROOT/build_mojave.sh"
+          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
+          echo "Source root: $SOURCE_ROOT"
+          sw_vers
+          xcode-select -p
+          cmake --version
+          git --version
+
+      - name: Prepare JUCE 6.1.6 for the macOS 15 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          JUCE_ROOT="$RUNNER_TEMP/JUCE-6.1.6"
+          git clone --depth 1 --branch 6.1.6 https://github.com/juce-framework/JUCE.git "$JUCE_ROOT"
+
+          # JUCE 6.1.6 references CGWindowListCreateImage, unavailable in the
+          # macOS 15 SDK. The plug-in does not use JUCE native-window snapshots.
+          # Patch only that helper so the older pinned JUCE version can compile.
+          python3 - "$JUCE_ROOT/modules/juce_gui_basics/native/juce_mac_Windowing.mm" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text()
+          start_marker = "static Image createNSWindowSnapshot (NSWindow* nsWindow)"
+          end_marker = "\\nImage createSnapshotOfNativeWindow (void* nativeWindowHandle)"
+          start = source.find(start_marker)
+          end = source.find(end_marker, start)
+          if start < 0 or end < 0 or "CGWindowListCreateImage" not in source[start:end]:
+              raise SystemExit("Could not locate the expected JUCE 6.1.6 snapshot helper; refusing an unsafe patch.")
+          replacement = """static Image createNSWindowSnapshot (NSWindow* nsWindow)
+          {
+              ignoreUnused (nsWindow);
+              return {};
+          }
+          """
+          path.write_text(source[:start] + replacement + source[end:])
+          print("Applied targeted JUCE 6.1.6 / macOS 15 SDK compatibility shim.")
+          PY
+
+          # Seed CMake's cache with this patched JUCE checkout; build_mojave.sh
+          # reuses it on the second configure.
+          cmake -S "$SOURCE_ROOT" -B "$SOURCE_ROOT/build_mojave" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.14 \
+            -DJUCE_SOURCE_DIR="$JUCE_ROOT" \
+            -DRECTIFI_BUILD_PLUGIN=ON \
+            -DRECTIFI_BUILD_TESTS=ON
+
+      - name: Build VST3 and run DSP tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_ROOT"
+          bash ./build_mojave.sh 2>&1 | tee "$GITHUB_WORKSPACE/RECTIFI_Mojave_Build.log"
+
+      - name: Package compiled VST3
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLUGIN_PATH="$(find "$SOURCE_ROOT/build_mojave" -type d -name '*.vst3' -print -quit)"
+          if [[ -z "$PLUGIN_PATH" ]]; then
+            echo "Build completed but no .vst3 bundle was found." >&2
+            find "$SOURCE_ROOT/build_mojave" -maxdepth 7 -print || true
+            exit 1
+          fi
+          echo "Compiled plugin: $PLUGIN_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$PLUGIN_PATH" "$GITHUB_WORKSPACE/RECTIFI_ExtendedModes_Mojave_x86_64_VST3.zip"
+          file "$PLUGIN_PATH/Contents/MacOS/"*
+
+      - name: Upload VST3 and build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: RECTIFI_ExtendedModes_Mojave_x86_64
+          path: |
+            RECTIFI_ExtendedModes_Mojave_x86_64_VST3.zip
+            RECTIFI_Mojave_Build.log
+          if-no-files-found: error
+          retention-days: 14
