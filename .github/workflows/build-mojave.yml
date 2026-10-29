@@ -73,7 +73,7 @@ jobs:
           start = source.find(marker)
           if start < 0:
               raise SystemExit("Could not find savePresetFromDialog(); refusing an unsafe patch.")
-          end_marker = "\\n}\\n"
+          end_marker = "\n}\n"
           end = source.find(end_marker, start)
           if end < 0:
               raise SystemExit("Could not find the end of savePresetFromDialog(); refusing an unsafe patch.")
