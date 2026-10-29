@@ -82,7 +82,7 @@ jobs:
           gzip -dc "$PATCH_GZ" > "$PATCH_FILE"
           if ! (cd "$SOURCE_ROOT" && patch --batch --forward --fuzz=3 -p1 < "$PATCH_FILE"); then
             echo "Patch failed; rejected hunk context follows:" >&2
-            find "$SOURCE_ROOT" -name '*.rej' -exec sh -c 'echo "=== $1 ==="; cat "$1"' _ {} \\;
+            if [[ -f "$SOURCE_ROOT/Source/PluginEditor.cpp.rej" ]]; then cat "$SOURCE_ROOT/Source/PluginEditor.cpp.rej"; fi
             exit 1
           fi
           echo "Applied PACCO AUDIO UI and Rectified Gain source changes."
