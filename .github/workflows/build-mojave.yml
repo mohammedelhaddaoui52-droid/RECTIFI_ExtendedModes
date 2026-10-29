@@ -77,7 +77,7 @@ jobs:
             echo "Patch payload length mismatch: expected 22524, got $ENCODED_SIZE" >&2
             exit 1
           fi
-          base64 -d "$PATCH_B64" > "$PATCH_GZ"
+          base64 -D -i "$PATCH_B64" -o "$PATCH_GZ"
           gzip -t "$PATCH_GZ"
           gzip -dc "$PATCH_GZ" > "$PATCH_FILE"
           (cd "$SOURCE_ROOT" && patch --batch --forward -p1 < "$PATCH_FILE")
