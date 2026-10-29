@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: rectifi-extended-mojave-${{ github.ref }}
@@ -47,6 +47,81 @@ jobs:
           xcode-select -p
           cmake --version
           git --version
+
+      - name: Fix source compatibility with JUCE 6.1.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$SOURCE_ROOT/Source/PluginEditor.cpp" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text()
+          replacements = {
+              "BinaryData::Archivo_Regular_ttfSize": "BinaryData::ArchivoRegular_ttfSize",
+              "BinaryData::Archivo_Regular_ttf": "BinaryData::ArchivoRegular_ttf",
+              "BinaryData::MartianMono_Bold_ttfSize": "BinaryData::MartianMonoBold_ttfSize",
+              "BinaryData::MartianMono_Bold_ttf": "BinaryData::MartianMonoBold_ttf",
+              "BinaryData::MartianMono_Regular_ttfSize": "BinaryData::MartianMonoRegular_ttfSize",
+              "BinaryData::MartianMono_Regular_ttf": "BinaryData::MartianMonoRegular_ttf",
+          }
+          for old, new in replacements.items():
+              source = source.replace(old, new)
+
+          marker = "void RectifiAudioProcessorEditor::savePresetFromDialog()"
+          start = source.find(marker)
+          if start < 0:
+              raise SystemExit("Could not find savePresetFromDialog(); refusing an unsafe patch.")
+          end_marker = "\\n}\\n"
+          end = source.find(end_marker, start)
+          if end < 0:
+              raise SystemExit("Could not find the end of savePresetFromDialog(); refusing an unsafe patch.")
+          end += 3
+          old_function = source[start:end]
+          if "runModalLoop()" not in old_function:
+              raise SystemExit("Expected old runModalLoop() implementation was not found; refusing an unexpected patch.")
+
+          new_function = r'''void RectifiAudioProcessorEditor::savePresetFromDialog()
+          {
+              // JUCE 6.1.6 uses asynchronous modal callbacks instead of runModalLoop().
+              auto* dialog = new juce::AlertWindow("Save RECTI-FI Preset",
+                                                    "Name this preset:",
+                                                    juce::AlertWindow::NoIcon);
+              dialog->addTextEditor("presetName", "MY PRESET", "Preset name");
+              dialog->addButton("SAVE", 1);
+              dialog->addButton("CANCEL", 0);
+
+              juce::Component::SafePointer<RectifiAudioProcessorEditor> safeThis(this);
+              dialog->enterModalState(true,
+                  juce::ModalCallbackFunction::create([safeThis, dialog](int result)
+                  {
+                      if (result != 1 || safeThis == nullptr)
+                          return;
+
+                      const auto name = dialog->getTextEditorContents("presetName").trim().substring(0, 32);
+                      if (name.isEmpty() || !safeThis->processor.saveUserPreset(name))
+                          return;
+
+                      safeThis->refreshPresetNames();
+                      const auto names = safeThis->allPresetNames();
+                      for (int i = safeThis->builtInPresetNames.size(); i < names.size(); ++i)
+                      {
+                          if (names[i].equalsIgnoreCase(name))
+                          {
+                              safeThis->currentPresetIndex = i;
+                              safeThis->presetNameLabel.setText(names[i].toUpperCase(), juce::dontSendNotification);
+                              break;
+                          }
+                      }
+                  }),
+                  true);
+          }
+          '''
+          source = source[:start] + new_function + source[end:]
+          path.write_text(source)
+          print("Patched embedded font identifiers and asynchronous preset dialog.")
+          PY
 
       - name: Prepare JUCE 6.1.6 for the macOS 15 SDK
         shell: bash
@@ -110,6 +185,41 @@ jobs:
           echo "Compiled plugin: $PLUGIN_PATH"
           ditto -c -k --sequesterRsrc --keepParent "$PLUGIN_PATH" "$GITHUB_WORKSPACE/RECTIFI_ExtendedModes_Mojave_x86_64_VST3.zip"
           file "$PLUGIN_PATH/Contents/MacOS/"*
+
+      - name: Update repository source ZIP with successful build fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$SOURCE_ROOT" "$GITHUB_WORKSPACE/RECTIFI_VST3_ExtendedModes_Source.zip" <<'PY'
+          from pathlib import Path
+          import sys
+          import zipfile
+
+          root = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2])
+          temp = output.with_suffix(".tmp.zip")
+          root_arc = Path(root.name)
+          with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+              for path in sorted(root.rglob("*")):
+                  if not path.is_file():
+                      continue
+                  relative = path.relative_to(root)
+                  if any(part in {"build_mojave", "build_dsp_local"} for part in relative.parts):
+                      continue
+                  archive.write(path, (root_arc / relative).as_posix())
+          temp.replace(output)
+          print(f"Prepared corrected source archive: {output} ({output.stat().st_size} bytes)")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add RECTIFI_VST3_ExtendedModes_Source.zip
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix JUCE 6.1.6 source compatibility [skip ci]"
+            git push origin HEAD:main
+          else
+            echo "Source ZIP is already up to date."
+          fi
 
       - name: Upload VST3 and build log
         uses: actions/upload-artifact@v4
