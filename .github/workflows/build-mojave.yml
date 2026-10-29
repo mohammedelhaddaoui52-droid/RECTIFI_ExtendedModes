@@ -65,7 +65,7 @@ jobs:
           path = Path(sys.argv[1])
           source = path.read_text()
           start_marker = "static Image createNSWindowSnapshot (NSWindow* nsWindow)"
-          end_marker = "\\nImage createSnapshotOfNativeWindow (void* nativeWindowHandle)"
+          end_marker = "\nImage createSnapshotOfNativeWindow (void* nativeWindowHandle)"
           start = source.find(start_marker)
           end = source.find(end_marker, start)
           if start < 0 or end < 0 or "CGWindowListCreateImage" not in source[start:end]:
